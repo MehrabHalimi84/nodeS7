@@ -69,7 +69,7 @@ function NodeS7(opts) {
 	self.connectTimeout = undefined;
 	self.PDUTimeout = undefined;
 	self.globalTimeout = 1500; // In many use cases we will want to increase this
-        // In 0.3.17 this was made variable from cParam.timeout to ensure packets don't timeout at 1500ms if the user has specified a timeout externally.
+	// In 0.3.17 this was made variable from cParam.timeout to ensure packets don't timeout at 1500ms if the user has specified a timeout externally.
 	self.rack = 0;
 	self.slot = 2;
 	self.localTSAP = null;
@@ -95,7 +95,7 @@ function NodeS7(opts) {
 	self.rereadTimer = undefined;
 }
 
-NodeS7.prototype.getNextSeqNum = function() {
+NodeS7.prototype.getNextSeqNum = function () {
 	var self = this;
 
 	self.masterSequenceNumber += 1;
@@ -106,7 +106,7 @@ NodeS7.prototype.getNextSeqNum = function() {
 	return self.masterSequenceNumber;
 }
 
-NodeS7.prototype.setTranslationCB = function(cb) {
+NodeS7.prototype.setTranslationCB = function (cb) {
 	var self = this;
 	if (typeof cb === "function") {
 		outputLog('Translation OK');
@@ -114,7 +114,7 @@ NodeS7.prototype.setTranslationCB = function(cb) {
 	}
 }
 
-NodeS7.prototype.initiateConnection = function(cParam, callback) {
+NodeS7.prototype.initiateConnection = function (cParam, callback) {
 	var self = this;
 	if (cParam === undefined) { cParam = { port: 102, host: '192.168.8.106' }; }
 	outputLog('Initiate Called - Connecting to PLC with address and parameters:');
@@ -148,7 +148,7 @@ NodeS7.prototype.initiateConnection = function(cParam, callback) {
 	self.connectNow(self.connectionParams, false);
 }
 
-NodeS7.prototype.dropConnection = function(callback) {
+NodeS7.prototype.dropConnection = function (callback) {
 	var self = this;
 
 	// prevents triggering reconnection even after calling dropConnection (fixes #70)
@@ -168,7 +168,7 @@ NodeS7.prototype.dropConnection = function(callback) {
 		// now wait for 'on close' event to trigger connection cleanup
 
 		// but also start a timer to destroy the connection in case we do not receive the close
-		self.dropConnectionTimer = setTimeout(function() {
+		self.dropConnectionTimer = setTimeout(function () {
 			if (self.dropConnectionCallback) {
 				// clean up the connection now the socket has closed
 				self.connectionCleanup();
@@ -184,7 +184,7 @@ NodeS7.prototype.dropConnection = function(callback) {
 	}
 }
 
-NodeS7.prototype.connectNow = function(cParam) {
+NodeS7.prototype.connectNow = function (cParam) {
 	var self = this;
 
 	// prevents any reconnect timer to fire this again
@@ -195,29 +195,29 @@ NodeS7.prototype.connectNow = function(cParam) {
 	if (self.isoConnectionState >= 1) { return; }
 	self.connectionCleanup();
 
-        self.isoclient = net.connect(cParam);                                                                                                                                        
+	self.isoclient = net.connect(cParam);
 
-        self.isoclient.setTimeout(cParam.timeout || 5000, () => {                                                                                                                    
-            self.isoclient.destroy();                                                                                                                                            
-            self.connectError.apply(self, [{ code: 'EUSERTIMEOUT' }]); // Former use of "arguments" was always going to be 0.  Use "USERTIMEOUT" to show difference between this and TCP timeout.                                                                                                                            
-        });                                                                                                                                                                          
+	self.isoclient.setTimeout(cParam.timeout || 5000, () => {
+		self.isoclient.destroy();
+		self.connectError.apply(self, [{ code: 'EUSERTIMEOUT' }]); // Former use of "arguments" was always going to be 0.  Use "USERTIMEOUT" to show difference between this and TCP timeout.                                                                                                                            
+	});
 
-        self.isoclient.once('connect', () => {                                                                                                                                       
-            self.isoclient.setTimeout(0);                                                                                                                                                
-            self.onTCPConnect.apply(self, arguments);                                                                                                                            
-        });                                                                                                                                                                          
+	self.isoclient.once('connect', () => {
+		self.isoclient.setTimeout(0);
+		self.onTCPConnect.apply(self, arguments);
+	});
 
-        self.isoConnectionState = 1;  // 1 = trying to connect  
+	self.isoConnectionState = 1;  // 1 = trying to connect  
 
-	self.isoclient.on('error', function() {
-            self.connectError.apply(self, arguments);
+	self.isoclient.on('error', function () {
+		self.connectError.apply(self, arguments);
 	});
 
 	outputLog('<initiating a new connection ' + Date() + '>', 1, self.connectionID);
 	outputLog('Attempting to connect to host...', 0, self.connectionID);
 }
 
-NodeS7.prototype.connectError = function(e) {
+NodeS7.prototype.connectError = function (e) {
 	var self = this;
 
 	// Note that a TCP connection timeout error will appear here.  An ISO connection timeout error is a packet timeout.
@@ -229,23 +229,35 @@ NodeS7.prototype.connectError = function(e) {
 	self.isoConnectionState = 0;
 }
 
-NodeS7.prototype.readWriteError = function(e) {
+NodeS7.prototype.readWriteError = function (e) {
 	var self = this;
 	outputLog('We Caught a read/write error ' + e.code + ' - will DISCONNECT and attempt to reconnect.');
 	self.isoConnectionState = 0;
 	self.connectionReset();
 }
 
-NodeS7.prototype.packetTimeout = function(packetType, packetSeqNum) {
+NodeS7.prototype.packetTimeout = function (packetType, packetSeqNum) {
 	var self = this;
 	outputLog('PacketTimeout called with type ' + packetType + ' and seq ' + packetSeqNum, 1, self.connectionID);
 	if (packetType === "connect") {
 		outputLog("TIMED OUT connecting to the PLC - Disconnecting", 0, self.connectionID);
+
+		// --- FIX START (Prevent Infinite Loop on Initial Connect) ---
+		// If the user is waiting for the initial connection callback, fail hard instead of retrying forever.
+		if (typeof (self.connectCallback) === "function" && !self.connectCBIssued) {
+			outputLog("Initial Connection Handshake Timed Out. Reporting error to callback.", 0, self.connectionID);
+			self.connectionReset();
+			self.connectCBIssued = true;
+			self.connectCallback("CONNECTION ERROR: Handshake Timed Out");
+			return undefined; // Stop here! Do not schedule a reconnect.
+		}
+		// --- FIX END ---
+
 		outputLog("Wait for 2 seconds then try again.", 0, self.connectionID);
 		self.connectionReset();
 		outputLog("Scheduling a reconnect from packetTimeout, connect type", 0, self.connectionID);
 		clearTimeout(self.reconnectTimer);
-		self.reconnectTimer = setTimeout(function() {
+		self.reconnectTimer = setTimeout(function () {
 			outputLog("The scheduled reconnect from packetTimeout, connect type, is happening now", 0, self.connectionID);
 			if (self.isoConnectionState === 0) {
 				self.connectNow.apply(self, arguments);
@@ -253,13 +265,14 @@ NodeS7.prototype.packetTimeout = function(packetType, packetSeqNum) {
 		}, 2000, self.connectionParams);
 		return undefined;
 	}
+
 	if (packetType === "PDU") {
 		outputLog("TIMED OUT waiting for PDU reply packet from PLC - Disconnecting");
 		outputLog("Wait for 2 seconds then try again.", 0, self.connectionID);
 		self.connectionReset();
 		outputLog("Scheduling a reconnect from packetTimeout, connect type", 0, self.connectionID);
 		clearTimeout(self.reconnectTimer);
-		self.reconnectTimer = setTimeout(function() {
+		self.reconnectTimer = setTimeout(function () {
 			outputLog("The scheduled reconnect from packetTimeout, PDU type, is happening now", 0, self.connectionID);
 			self.connectNow.apply(self, arguments);
 		}, 2000, self.connectionParams);
@@ -286,7 +299,7 @@ NodeS7.prototype.packetTimeout = function(packetType, packetSeqNum) {
 	outputLog("Unknown timeout error.  Nothing was done - this shouldn't happen.");
 }
 
-NodeS7.prototype.onTCPConnect = function() {
+NodeS7.prototype.onTCPConnect = function () {
 	var self = this, connBuf;
 
 	outputLog('TCP Connection Established to ' + self.isoclient.remoteAddress + ' on port ' + self.isoclient.remotePort, 0, self.connectionID);
@@ -296,13 +309,13 @@ NodeS7.prototype.onTCPConnect = function() {
 	self.isoConnectionState = 2;  // 2 = TCP connected, wait for ISO connection confirmation
 
 	// Send an ISO-on-TCP connection request.
-	self.connectTimeout = setTimeout(function() {
+	self.connectTimeout = setTimeout(function () {
 		self.packetTimeout.apply(self, arguments);
 	}, self.globalTimeout, "connect");
 
 	connBuf = self.connectReq.slice();
 
-	if(self.localTSAP !== null && self.remoteTSAP !== null) {
+	if (self.localTSAP !== null && self.remoteTSAP !== null) {
 		outputLog('Using localTSAP [0x' + self.localTSAP.toString(16) + '] and remoteTSAP [0x' + self.remoteTSAP.toString(16) + ']', 0, self.connectionID);
 		connBuf.writeUInt16BE(self.localTSAP, 16)
 		connBuf.writeUInt16BE(self.remoteTSAP, 20)
@@ -314,23 +327,23 @@ NodeS7.prototype.onTCPConnect = function() {
 	self.isoclient.write(connBuf);
 
 	// Listen for a reply.
-	self.isoclient.on('data', function() {
+	self.isoclient.on('data', function () {
 		self.onISOConnectReply.apply(self, arguments);
 	});
 
 	// Hook up the event that fires on disconnect
-	self.isoclient.on('end', function() {
+	self.isoclient.on('end', function () {
 		self.onClientDisconnect.apply(self, arguments);
 	});
 
-    // listen for close (caused by us sending an end)
-	self.isoclient.on('close', function() {
+	// listen for close (caused by us sending an end)
+	self.isoclient.on('close', function () {
 		self.onClientClose.apply(self, arguments);
 
 	});
 }
 
-NodeS7.prototype.onISOConnectReply = function(data) {
+NodeS7.prototype.onISOConnectReply = function (data) {
 	var self = this;
 	self.isoclient.removeAllListeners('data'); //self.onISOConnectReply);
 	//self.isoclient.removeAllListeners('error'); Avoid removing the calback before setting it again
@@ -338,9 +351,9 @@ NodeS7.prototype.onISOConnectReply = function(data) {
 	clearTimeout(self.connectTimeout);
 
 	// ignore if we're not expecting it - prevents write after end exception as of #80
-	if (self.isoConnectionState != 2) { 
+	if (self.isoConnectionState != 2) {
 		outputLog('Ignoring ISO connect reply, expecting isoConnectionState of 2, is currently ' + self.isoConnectionState, 0, self.connectionID);
-		return; 
+		return;
 	}
 
 	// Track the connection state
@@ -361,41 +374,41 @@ NodeS7.prototype.onISOConnectReply = function(data) {
 	self.negotiatePDU.writeInt16BE(self.requestMaxParallel, 21);
 	self.negotiatePDU.writeInt16BE(self.requestMaxPDU, 23);
 
-	self.PDUTimeout = setTimeout(function() {
+	self.PDUTimeout = setTimeout(function () {
 		self.packetTimeout.apply(self, arguments);
 	}, self.globalTimeout, "PDU");
 
 	self.isoclient.write(self.negotiatePDU.slice(0, 25));
-	self.isoclient.on('data', function() {
+	self.isoclient.on('data', function () {
 		self.onPDUReply.apply(self, arguments);
 	});
-        self.isoclient.removeAllListeners('error');
-	self.isoclient.on('error', function() {
+	self.isoclient.removeAllListeners('error');
+	self.isoclient.on('error', function () {
 		self.readWriteError.apply(self, arguments);
 	});
 }
 
-NodeS7.prototype.onPDUReply = function(theData) {
+NodeS7.prototype.onPDUReply = function (theData) {
 	var self = this;
 	self.isoclient.removeAllListeners('data');
 	self.isoclient.removeAllListeners('error');
 
 	clearTimeout(self.PDUTimeout);
 
-	var data=checkRFCData(theData);
+	var data = checkRFCData(theData);
 
-	if(data==="fastACK"){
+	if (data === "fastACK") {
 		//Read again and wait for the requested data
 		outputLog('Fast Acknowledge received.', 0, self.connectionID);
 		self.isoclient.removeAllListeners('error');
 		self.isoclient.removeAllListeners('data');
-		self.isoclient.on('data', function() {
+		self.isoclient.on('data', function () {
 			self.onPDUReply.apply(self, arguments);
 		});
-		self.isoclient.on('error', function() {
+		self.isoclient.on('error', function () {
 			self.readWriteError.apply(self, arguments);
 		});
-	}else if((data[4] + 1 + 12 + data.readInt16BE(13) === data.readInt16BE(2) - 4)){//valid the length of FA+S7 package :  ISO_Length+ISO_LengthItself+S7Com_Header+S7Com_Header_ParameterLength===TPKT_Length-4
+	} else if ((data[4] + 1 + 12 + data.readInt16BE(13) === data.readInt16BE(2) - 4)) {//valid the length of FA+S7 package :  ISO_Length+ISO_LengthItself+S7Com_Header+S7Com_Header_ParameterLength===TPKT_Length-4
 		//Everything OK...go on
 		// Track the connection state
 		self.isoConnectionState = 4;  // 4 = Received PDU response, good to go
@@ -420,10 +433,10 @@ NodeS7.prototype.onPDUReply = function(theData) {
 		}
 
 		outputLog('Received PDU Response - Proceeding with PDU ' + self.maxPDU + ' and ' + self.maxParallel + ' max parallel connections.', 0, self.connectionID);
-		self.isoclient.on('data', function() {
+		self.isoclient.on('data', function () {
 			self.onResponse.apply(self, arguments);
 		});  // We need to make sure we don't add this event every time if we call it on data.
-		self.isoclient.on('error', function() {
+		self.isoclient.on('error', function () {
 			self.readWriteError.apply(self, arguments);
 		});  // Might want to remove the self.connecterror listener
 		//self.isoclient.removeAllListeners('error');
@@ -431,7 +444,7 @@ NodeS7.prototype.onPDUReply = function(theData) {
 			self.connectCBIssued = true;
 			self.connectCallback();
 		}
-	}else{
+	} else {
 		outputLog('INVALID Telegram ', 0, self.connectionID);
 		outputLog('Byte 0 From Header is ' + theData[0] + ' it has to be 0x03, Byte 5 From Header is  ' + theData[5] + ' and it has to be 0x0F ', 0, self.connectionID);
 		outputLog('INVALID PDU RESPONSE or CONNECTION REFUSED - DISCONNECTING', 0, self.connectionID);
@@ -439,7 +452,7 @@ NodeS7.prototype.onPDUReply = function(theData) {
 		outputLog(theData);
 		self.isoclient.end();
 		clearTimeout(self.reconnectTimer);
-		self.reconnectTimer = setTimeout(function() {
+		self.reconnectTimer = setTimeout(function () {
 			self.connectNow.apply(self, arguments);
 		}, 2000, self.connectionParams);
 		return null;
@@ -447,7 +460,7 @@ NodeS7.prototype.onPDUReply = function(theData) {
 }
 
 
-NodeS7.prototype.writeItems = function(arg, value, cb) {
+NodeS7.prototype.writeItems = function (arg, value, cb) {
 	var self = this, i;
 	outputLog("Preparing to WRITE " + arg + " to value " + value, 0, self.connectionID);
 	if (self.isWriting() || self.writeInQueue) {
@@ -491,7 +504,7 @@ NodeS7.prototype.writeItems = function(arg, value, cb) {
 		self.sendWritePacket();
 	} else {
 		if (self.writeInQueue) {
-			outputLog("Write was already in queue - should be prevented above",1,self.connectionID);
+			outputLog("Write was already in queue - should be prevented above", 1, self.connectionID);
 		}
 		self.writeInQueue = true;
 		outputLog("Adding write to queue");
@@ -500,7 +513,7 @@ NodeS7.prototype.writeItems = function(arg, value, cb) {
 }
 
 
-NodeS7.prototype.findItem = function(useraddr) {
+NodeS7.prototype.findItem = function (useraddr) {
 	var self = this, i;
 	var commstate = { value: self.isoConnectionState !== 4, quality: 'OK' };
 	if (useraddr === '_COMMERR') { return commstate; }
@@ -510,12 +523,12 @@ NodeS7.prototype.findItem = function(useraddr) {
 	return undefined;
 }
 
-NodeS7.prototype.addItems = function(arg) {
+NodeS7.prototype.addItems = function (arg) {
 	var self = this;
 	self.addRemoveArray.push({ arg: arg, action: 'add' });
 }
 
-NodeS7.prototype.addItemsNow = function(arg) {
+NodeS7.prototype.addItemsNow = function (arg) {
 	var self = this, i;
 	outputLog("Adding " + arg, 0, self.connectionID);
 	if (typeof (arg) === "string" && arg !== "_COMMERR") {
@@ -539,12 +552,12 @@ NodeS7.prototype.addItemsNow = function(arg) {
 	self.readPacketValid = false;
 }
 
-NodeS7.prototype.removeItems = function(arg) {
+NodeS7.prototype.removeItems = function (arg) {
 	var self = this;
 	self.addRemoveArray.push({ arg: arg, action: 'remove' });
 }
 
-NodeS7.prototype.removeItemsNow = function(arg) {
+NodeS7.prototype.removeItemsNow = function (arg) {
 	var self = this, i;
 	if (typeof arg === "undefined") {
 		self.polledReadBlockList = [];
@@ -569,7 +582,7 @@ NodeS7.prototype.removeItemsNow = function(arg) {
 	//	self.prepareReadPacket();
 }
 
-NodeS7.prototype.readAllItems = function(arg) {
+NodeS7.prototype.readAllItems = function (arg) {
 	var self = this;
 
 	outputLog("Reading All Items (readAllItems was called)", 1, self.connectionID);
@@ -588,7 +601,7 @@ NodeS7.prototype.readAllItems = function(arg) {
 	if (self.isWaiting()) {
 		outputLog("Waiting to read for all R/W operations to complete.  Will re-trigger readAllItems in 100ms.", 0, self.connectionID);
 		clearTimeout(self.rereadTimer);
-		self.rereadTimer = setTimeout(function() {
+		self.rereadTimer = setTimeout(function () {
 			self.rereadTimer = undefined; //already fired, can safely discard
 			self.readAllItems.apply(self, arguments);
 		}, 100, arg);
@@ -596,7 +609,7 @@ NodeS7.prototype.readAllItems = function(arg) {
 	}
 
 	// Now we check the array of adding and removing things.  Only now is it really safe to do this.
-	self.addRemoveArray.forEach(function(element) {
+	self.addRemoveArray.forEach(function (element) {
 		outputLog('Adding or Removing ' + util.format(element), 1, self.connectionID);
 		if (element.action === 'remove') {
 			self.removeItemsNow(element.arg);
@@ -616,12 +629,12 @@ NodeS7.prototype.readAllItems = function(arg) {
 	self.sendReadPacket(); // Note this sends the first few read packets depending on parallel connection restrictions.
 }
 
-NodeS7.prototype.isWaiting = function() {
+NodeS7.prototype.isWaiting = function () {
 	var self = this;
 	return (self.isReading() || self.isWriting());
 }
 
-NodeS7.prototype.isReading = function() {
+NodeS7.prototype.isReading = function () {
 	var self = this, i;
 	// Walk through the array and if any packets are marked as sent, it means we haven't received our final confirmation.
 	for (i = 0; i < self.readPacketArray.length; i++) {
@@ -630,7 +643,7 @@ NodeS7.prototype.isReading = function() {
 	return false;
 }
 
-NodeS7.prototype.isWriting = function() {
+NodeS7.prototype.isWriting = function () {
 	var self = this, i;
 	// Walk through the array and if any packets are marked as sent, it means we haven't received our final confirmation.
 	for (i = 0; i < self.writePacketArray.length; i++) {
@@ -640,7 +653,7 @@ NodeS7.prototype.isWriting = function() {
 }
 
 
-NodeS7.prototype.clearReadPacketTimeouts = function() {
+NodeS7.prototype.clearReadPacketTimeouts = function () {
 	var self = this, i;
 	outputLog('Clearing read PacketTimeouts', 1, self.connectionID);
 	// Before we initialize the self.readPacketArray, we need to loop through all of them and clear timeouts.
@@ -651,7 +664,7 @@ NodeS7.prototype.clearReadPacketTimeouts = function() {
 	}
 }
 
-NodeS7.prototype.clearWritePacketTimeouts = function() {
+NodeS7.prototype.clearWritePacketTimeouts = function () {
 	var self = this, i;
 	outputLog('Clearing write PacketTimeouts', 1, self.connectionID);
 	// Before we initialize the self.readPacketArray, we need to loop through all of them and clear timeouts.
@@ -662,7 +675,7 @@ NodeS7.prototype.clearWritePacketTimeouts = function() {
 	}
 }
 
-NodeS7.prototype.prepareWritePacket = function() {
+NodeS7.prototype.prepareWritePacket = function () {
 	var self = this, i;
 	var itemList = self.instantWriteBlockList;
 	var requestList = [];			// The request list consists of the block list, split into chunks readable by PDU.
@@ -799,7 +812,7 @@ NodeS7.prototype.prepareWritePacket = function() {
 }
 
 
-NodeS7.prototype.prepareReadPacket = function() {
+NodeS7.prototype.prepareReadPacket = function () {
 	var self = this, i;
 	// Note that for a PDU size of 240, the MOST bytes we can request depends on the number of items.
 	// To figure this out, allow for a 247 byte packet.  7 TPKT+COTP header doesn't count for PDU, so 240 bytes of "S7 data".
@@ -968,12 +981,12 @@ NodeS7.prototype.prepareReadPacket = function() {
 	self.readPacketValid = true;
 }
 
-NodeS7.prototype.sendReadPacket = function() {
+NodeS7.prototype.sendReadPacket = function () {
 	var self = this, i, j, flagReconnect = false;
 
 	outputLog("SendReadPacket called", 1, self.connectionID);
 
-	if (!self.readPacketArray.length && (typeof(self.readDoneCallback) === "function")) {
+	if (!self.readPacketArray.length && (typeof (self.readDoneCallback) === "function")) {
 		// Call back the callback if we are being asked for zero tags - for consistency
 		self.readDoneCallback(false, {}); // Data is second argument and shouldn't be undefined
 	}
@@ -999,7 +1012,7 @@ NodeS7.prototype.sendReadPacket = function() {
 		if (self.isoConnectionState == 4) {
 			outputLog('Sending Read Packet With Sequence Number ' + self.readPacketArray[i].seqNum, 1, self.connectionID);
 
-			self.readPacketArray[i].timeout = setTimeout(function() {
+			self.readPacketArray[i].timeout = setTimeout(function () {
 				self.packetTimeout.apply(self, arguments);
 			}, self.globalTimeout, "read", self.readPacketArray[i].seqNum);
 			self.isoclient.write(self.readReq.slice(0, 19 + self.readPacketArray[i].itemList.length * 12));  // was 31
@@ -1026,30 +1039,30 @@ NodeS7.prototype.sendReadPacket = function() {
 				flagReconnect = true;
 			}
 			outputLog('Requesting PacketTimeout Due to ISO CS NOT 4 - READ SN ' + self.readPacketArray[i].seqNum, 1, self.connectionID);
-			self.readPacketArray[i].timeout = setTimeout(function() {
+			self.readPacketArray[i].timeout = setTimeout(function () {
 				self.packetTimeout.apply(self, arguments);
 			}, 0, "read", self.readPacketArray[i].seqNum);
 		}
 	}
 
-/* NOTE: We no longer do this here.
-Reconnects are done on the response that we will get from the above packets.
-Reason: We could have some packets waiting for timeout from the PLC, and others coming back instantly.
-	if (flagReconnect) {
-		//		console.log("Asking for callback next tick and my ID is " + self.connectionID);
-		clearTimeout(self.reconnectTimer)
-		self.reconnectTimer = setTimeout(function() {
-			//			console.log("Next tick is here and my ID is " + self.connectionID);
-			outputLog("The scheduled reconnect from sendReadPacket is happening now", 1, self.connectionID);
-			self.connectNow(self.connectionParams);  // We used to do this NOW - not NextTick() as we need to mark isoConnectionState as 1 right now.  Otherwise we queue up LOTS of connects and crash.
-		}, 0);
-	}
-*/
+	/* NOTE: We no longer do this here.
+	Reconnects are done on the response that we will get from the above packets.
+	Reason: We could have some packets waiting for timeout from the PLC, and others coming back instantly.
+		if (flagReconnect) {
+			//		console.log("Asking for callback next tick and my ID is " + self.connectionID);
+			clearTimeout(self.reconnectTimer)
+			self.reconnectTimer = setTimeout(function() {
+				//			console.log("Next tick is here and my ID is " + self.connectionID);
+				outputLog("The scheduled reconnect from sendReadPacket is happening now", 1, self.connectionID);
+				self.connectNow(self.connectionParams);  // We used to do this NOW - not NextTick() as we need to mark isoConnectionState as 1 right now.  Otherwise we queue up LOTS of connects and crash.
+			}, 0);
+		}
+	*/
 
 }
 
 
-NodeS7.prototype.sendWritePacket = function() {
+NodeS7.prototype.sendWritePacket = function () {
 	var self = this, i, dataBuffer, itemBuffer, dataBufferPointer, flagReconnect;
 
 	dataBuffer = Buffer.alloc(8192);
@@ -1088,7 +1101,7 @@ NodeS7.prototype.sendWritePacket = function() {
 
 		if (self.isoConnectionState === 4) {
 			//			outputLog('writing' + (19+dataBufferPointer+self.writePacketArray[i].itemList.length*12));
-			self.writePacketArray[i].timeout = setTimeout(function() {
+			self.writePacketArray[i].timeout = setTimeout(function () {
 				self.packetTimeout.apply(self, arguments);
 			}, self.globalTimeout, "write", self.writePacketArray[i].seqNum);
 			self.isoclient.write(self.writeReq.slice(0, 19 + dataBufferPointer + self.writePacketArray[i].itemList.length * 12));  // was 31
@@ -1111,10 +1124,10 @@ NodeS7.prototype.sendWritePacket = function() {
 			// it would have just after the FOR loop is done.
 			// (The FOR statement will increment it to beyond the array, then exit after the condition fails)
 			// scopePlaceholder works as the array is de-referenced NOW, not "nextTick".
-//dm			var scopePlaceholder = self.writePacketArray[i].seqNum;
-//dm			process.nextTick(function() {
-//dm				self.packetTimeout("write", scopePlaceholder);
-//dm			});
+			//dm			var scopePlaceholder = self.writePacketArray[i].seqNum;
+			//dm			process.nextTick(function() {
+			//dm				self.packetTimeout("write", scopePlaceholder);
+			//dm			});
 
 			self.writePacketArray[i].timeout = setTimeout(function () {
 				self.packetTimeout.apply(self, arguments);
@@ -1125,21 +1138,21 @@ NodeS7.prototype.sendWritePacket = function() {
 			}
 		}
 	}
-/* NOTE: We no longer do this here.
-Reconnects are done on the response that we will get from the above packets.
-Reason: We could have some packets waiting for timeout from the PLC, and others coming back instantly.	
-	if (flagReconnect) {
-		//		console.log("Asking for callback next tick and my ID is " + self.connectionID);
-		clearTimeout(self.reconnectTimer);
-		self.reconnectTimer = setTimeout(function() {
-			//			console.log("Next tick is here and my ID is " + self.connectionID);
-			outputLog("The scheduled reconnect from sendWritePacket is happening now", 1, self.connectionID);
-			self.connectNow(self.connectionParams);  // We used to do this NOW - not NextTick() as we need to mark isoConnectionState as 1 right now.  Otherwise we queue up LOTS of connects and crash.
-		}, 0);
-	}*/
+	/* NOTE: We no longer do this here.
+	Reconnects are done on the response that we will get from the above packets.
+	Reason: We could have some packets waiting for timeout from the PLC, and others coming back instantly.	
+		if (flagReconnect) {
+			//		console.log("Asking for callback next tick and my ID is " + self.connectionID);
+			clearTimeout(self.reconnectTimer);
+			self.reconnectTimer = setTimeout(function() {
+				//			console.log("Next tick is here and my ID is " + self.connectionID);
+				outputLog("The scheduled reconnect from sendWritePacket is happening now", 1, self.connectionID);
+				self.connectNow(self.connectionParams);  // We used to do this NOW - not NextTick() as we need to mark isoConnectionState as 1 right now.  Otherwise we queue up LOTS of connects and crash.
+			}, 0);
+		}*/
 }
 
-NodeS7.prototype.isOptimizableArea = function(area) {
+NodeS7.prototype.isOptimizableArea = function (area) {
 	var self = this;
 
 	if (self.doNotOptimize) { return false; } // Are we skipping all optimization due to user request?
@@ -1154,7 +1167,7 @@ NodeS7.prototype.isOptimizableArea = function(area) {
 	}
 }
 
-NodeS7.prototype.onResponse = function(theData) {
+NodeS7.prototype.onResponse = function (theData) {
 	var self = this;
 	// Packet Validity Check.  Note that this will pass even with a "not available" response received from the server.
 	// For length calculation and verification:
@@ -1177,20 +1190,20 @@ NodeS7.prototype.onResponse = function(theData) {
 		return;
 	}
 
-	var data=checkRFCData(theData);
+	var data = checkRFCData(theData);
 
-	if(data==="fastACK"){
+	if (data === "fastACK") {
 		//read again and wait for the requested data
 		outputLog('Fast Acknowledge received.', 0, self.connectionID);
 		self.isoclient.removeAllListeners('error');
 		self.isoclient.removeAllListeners('data');
-		self.isoclient.on('data', function() {
+		self.isoclient.on('data', function () {
 			self.onResponse.apply(self, arguments);
 		});
-		self.isoclient.on('error', function() {
+		self.isoclient.on('error', function () {
 			self.readWriteError.apply(self, arguments);
 		});
-	}else if( data[7] === 0x32 ){//check the validy of FA+S7 package
+	} else if (data[7] === 0x32) {//check the validy of FA+S7 package
 
 		//*********************   VALIDY CHECK ***********************************
 		//TODO: Check S7-Header properly
@@ -1206,7 +1219,7 @@ NodeS7.prototype.onResponse = function(theData) {
 			outputLog("An oversize packet was detected.  Excess length is " + (data.length - data.readInt16BE(2)) + ".  ");
 			outputLog("We assume this is because two packets were sent at nearly the same time by the PLC.");
 			outputLog("We are slicing the buffer and scheduling the second half for further processing next loop.");
-			setTimeout(function() {
+			setTimeout(function () {
 				self.onResponse.apply(self, arguments);
 			}, 0, data.slice(data.readInt16BE(2)));  // This re-triggers this same function with the sliced-up buffer.
 			// was used as a test		setTimeout(process.exit, 2000);
@@ -1263,7 +1276,7 @@ NodeS7.prototype.onResponse = function(theData) {
 			return null;
 		}
 
-	}else{
+	} else {
 		outputLog('INVALID READ RESPONSE - DISCONNECTING');
 		outputLog('TPKT Length From Header is ' + theData.readInt16BE(2) + ' and RCV buffer length is ' + theData.length + ' and COTP length is ' + theData.readUInt8(4) + ' and data[6] is ' + theData[6]);
 		outputLog(theData);
@@ -1273,7 +1286,7 @@ NodeS7.prototype.onResponse = function(theData) {
 
 }
 
-NodeS7.prototype.findReadIndexOfSeqNum = function(seqNum) {
+NodeS7.prototype.findReadIndexOfSeqNum = function (seqNum) {
 	var self = this, packetCounter;
 	for (packetCounter = 0; packetCounter < self.readPacketArray.length; packetCounter++) {
 		if (self.readPacketArray[packetCounter].seqNum == seqNum) {
@@ -1283,7 +1296,7 @@ NodeS7.prototype.findReadIndexOfSeqNum = function(seqNum) {
 	return undefined;
 }
 
-NodeS7.prototype.findWriteIndexOfSeqNum = function(seqNum) {
+NodeS7.prototype.findWriteIndexOfSeqNum = function (seqNum) {
 	var self = this, packetCounter;
 	for (packetCounter = 0; packetCounter < self.writePacketArray.length; packetCounter++) {
 		if (self.writePacketArray[packetCounter].seqNum == seqNum) {
@@ -1293,7 +1306,7 @@ NodeS7.prototype.findWriteIndexOfSeqNum = function(seqNum) {
 	return undefined;
 }
 
-NodeS7.prototype.writeResponse = function(data, foundSeqNum) {
+NodeS7.prototype.writeResponse = function (data, foundSeqNum) {
 	var self = this, dataPointer = 21, i, anyBadQualities;
 
 	for (var itemCount = 0; itemCount < self.writePacketArray[foundSeqNum].itemList.length; itemCount++) {
@@ -1317,10 +1330,10 @@ NodeS7.prototype.writeResponse = function(data, foundSeqNum) {
 	clearTimeout(self.writePacketArray[foundSeqNum].timeout);
 
 	if (!self.writePacketArray.every(doneSending)) {
-		outputLog("Not done sending - sending more packets from writeResponse",1,self.connectionID);
+		outputLog("Not done sending - sending more packets from writeResponse", 1, self.connectionID);
 		self.sendWritePacket();
 	} else {
-		outputLog("Received all packets in writeResponse",1,self.connectionID);
+		outputLog("Received all packets in writeResponse", 1, self.connectionID);
 		for (i = 0; i < self.writePacketArray.length; i++) {
 			self.writePacketArray[i].sent = false;
 			self.writePacketArray[i].rcvd = false;
@@ -1338,18 +1351,18 @@ NodeS7.prototype.writeResponse = function(data, foundSeqNum) {
 					anyBadQualities = true;
 				}
 			}
-//			outputLog(self.globalWriteBlockList[i].addr + ' write completed with quality ' + self.globalWriteBlockList[i].writeQuality, 1, self.connectionID);
+			//			outputLog(self.globalWriteBlockList[i].addr + ' write completed with quality ' + self.globalWriteBlockList[i].writeQuality, 1, self.connectionID);
 			if (!isQualityOK(self.globalWriteBlockList[i].writeQuality)) { anyBadQualities = true; }
 		}
 		if (self.resetPending) {
-			outputLog('Calling reset from writeResponse as there is one pending',0,self.connectionID);
+			outputLog('Calling reset from writeResponse as there is one pending', 0, self.connectionID);
 			self.resetNow();
 		}
 		if (self.isoConnectionState === 0) {
 			self.connectNow(self.connectionParams, false);
 		}
-		outputLog('We are calling back our writeDoneCallback.',1,self.connectionID);
-		if (typeof(self.writeDoneCallback) === 'function') {
+		outputLog('We are calling back our writeDoneCallback.', 1, self.connectionID);
+		if (typeof (self.writeDoneCallback) === 'function') {
 			self.writeDoneCallback(anyBadQualities);
 		}
 	}
@@ -1359,7 +1372,7 @@ function doneSending(element) {
 	return ((element.sent && element.rcvd) ? true : false);
 }
 
-NodeS7.prototype.readResponse = function(data, foundSeqNum) {
+NodeS7.prototype.readResponse = function (data, foundSeqNum) {
 	var self = this, i;
 	var anyBadQualities;
 	var dataPointer = 21; // For non-routed packets we start at byte 21 of the packet.  If we do routing it will be more than this.
@@ -1436,20 +1449,20 @@ NodeS7.prototype.readResponse = function(data, foundSeqNum) {
 			}
 		}
 
-// Not as of Feb 2019		if (self.resetPending) {
-// Not as of Feb 2019			self.resetNow();
-// Not as of Feb 2019		}
+		// Not as of Feb 2019		if (self.resetPending) {
+		// Not as of Feb 2019			self.resetNow();
+		// Not as of Feb 2019		}
 
 		if (!self.writeInQueue) {
 			if (self.resetPending) {
-				outputLog('Calling reset from readResponse as there is one pending',0,self.connectionID);
+				outputLog('Calling reset from readResponse as there is one pending', 0, self.connectionID);
 				self.resetNow();
 			}
 			if (self.isoConnectionState === 0) {
 				self.connectNow(self.connectionParams, false);
 			}
 		} else {
-			outputLog('Write In Queue.  ICS ' + self.isoConnectionState + ' resetPending ' + self.resetPending,1,self.connectionID);		
+			outputLog('Write In Queue.  ICS ' + self.isoConnectionState + ' resetPending ' + self.resetPending, 1, self.connectionID);
 		}
 
 		// Inform our user that we are done and that the values are ready for pickup.
@@ -1468,7 +1481,7 @@ NodeS7.prototype.readResponse = function(data, foundSeqNum) {
 }
 
 
-NodeS7.prototype.onClientDisconnect = function() {
+NodeS7.prototype.onClientDisconnect = function () {
 	var self = this;
 	outputLog('ISO-on-TCP connection DISCONNECTED.', 0, self.connectionID);
 
@@ -1487,41 +1500,41 @@ NodeS7.prototype.onClientDisconnect = function() {
 	self.connectionReset();
 }
 
-NodeS7.prototype.onClientClose = function() {
+NodeS7.prototype.onClientClose = function () {
 	var self = this;
-    // clean up the connection now the socket has closed
-		// We used to call self.connectionCleanup() here, but it caused problems.
-		// However - realize that this event is also called when the OTHER END of the connection sends a FIN packet.
-		// Certain situations (download user program to mem card on S7-400, pop memory card out of S7-300, both with NetLink) cause this to happen.
-		// So now, let's try a "connetionReset".  This way, we are guaranteed to return values (even if bad) and reset at the proper time.
-		// Without this, client applications had to be prepared for a read/write not returning.
+	// clean up the connection now the socket has closed
+	// We used to call self.connectionCleanup() here, but it caused problems.
+	// However - realize that this event is also called when the OTHER END of the connection sends a FIN packet.
+	// Certain situations (download user program to mem card on S7-400, pop memory card out of S7-300, both with NetLink) cause this to happen.
+	// So now, let's try a "connetionReset".  This way, we are guaranteed to return values (even if bad) and reset at the proper time.
+	// Without this, client applications had to be prepared for a read/write not returning.
 	self.connectionReset();
 
-    // initiate the callback stored by dropConnection
-    if (self.dropConnectionCallback) {
-        self.dropConnectionCallback();
-        // prevent any possiblity of the callback being called twice
-        self.dropConnectionCallback = null;
-        // and cancel the timeout
-        clearTimeout(self.dropConnectionTimer);
-    }
+	// initiate the callback stored by dropConnection
+	if (self.dropConnectionCallback) {
+		self.dropConnectionCallback();
+		// prevent any possiblity of the callback being called twice
+		self.dropConnectionCallback = null;
+		// and cancel the timeout
+		clearTimeout(self.dropConnectionTimer);
+	}
 }
 
-NodeS7.prototype.connectionReset = function() {
+NodeS7.prototype.connectionReset = function () {
 	var self = this;
 	self.isoConnectionState = 0;
 	self.resetPending = true;
 	outputLog('ConnectionReset has been called to set the reset as pending', 0, self.connectionID);
-	if (!self.isReading() && !self.isWriting() && !self.writeInQueue && typeof(self.resetTimeout) === 'undefined') { // We can no longer logically ignore writes here
-		self.resetTimeout = setTimeout(function() {
-			outputLog('Timed reset has happened. Ideally this would never be called as reset should be completed when done r/w.',0,self.connectionID);
+	if (!self.isReading() && !self.isWriting() && !self.writeInQueue && typeof (self.resetTimeout) === 'undefined') { // We can no longer logically ignore writes here
+		self.resetTimeout = setTimeout(function () {
+			outputLog('Timed reset has happened. Ideally this would never be called as reset should be completed when done r/w.', 0, self.connectionID);
 			self.resetNow.apply(self, arguments);
 		}, 3500);  // Increased to 3500 to prevent problems with packet timeouts
 	}
 	// We wait until read() is called again to re-connect.
 }
 
-NodeS7.prototype.resetNow = function() {
+NodeS7.prototype.resetNow = function () {
 	var self = this;
 	self.isoConnectionState = 0;
 	self.isoclient.end();
@@ -1536,7 +1549,7 @@ NodeS7.prototype.resetNow = function() {
 	}
 }
 
-NodeS7.prototype.connectionCleanup = function() {
+NodeS7.prototype.connectionCleanup = function () {
 	var self = this;
 	self.isoConnectionState = 0;
 	outputLog('Connection cleanup is happening', 0, self.connectionID);
@@ -1548,7 +1561,7 @@ NodeS7.prototype.connectionCleanup = function() {
 		self.isoclient.removeAllListeners('connect');
 		self.isoclient.removeAllListeners('end');
 		self.isoclient.removeAllListeners('close');
-		self.isoclient.on('error',function() {
+		self.isoclient.on('error', function () {
 			outputLog('TCP socket error following connection cleanup');
 		});
 	}
@@ -1562,33 +1575,33 @@ NodeS7.prototype.connectionCleanup = function() {
  * Internal Functions
  */
 
-function checkRFCData(data){
-   var ret=null;
-   var RFC_Version = data[0];
-   var TPKT_Length = data.readInt16BE(2);
-   var TPDU_Code = data[5]; //Data==0xF0 !!
-   var LastDataUnit = data[6];//empty fragmented frame => 0=not the last package; 1=last package
+function checkRFCData(data) {
+	var ret = null;
+	var RFC_Version = data[0];
+	var TPKT_Length = data.readInt16BE(2);
+	var TPDU_Code = data[5]; //Data==0xF0 !!
+	var LastDataUnit = data[6];//empty fragmented frame => 0=not the last package; 1=last package
 
-   if(RFC_Version !==0x03 && TPDU_Code !== 0xf0){
-      //Check if its an RFC package and a Data package
-      return 'error';
-   }else if((LastDataUnit >> 7) === 0 && TPKT_Length == data.length &&  data.length === 7){
-      // Check if its a Fast Acknowledge package from older PLCs or  WinAC or data is too long ...
-      // For example: <Buffer 03 00 00 07 02 f0 00> => data.length==7
-      ret='fastACK';
-   }else if((LastDataUnit >> 7) == 1 && TPKT_Length <= data.length){
-      // Check if its an  FastAcknowledge package + S7Data package
-      // <Buffer 03 00 00 1b 02 f0 80 32 03 00 00 00 00 00 08 00 00 00 00 f0 00 00 01 00 01 00 f0> => data.length==7+20=27
-      ret=data;
-   }else if((LastDataUnit >> 7) == 0  && TPKT_Length !== data.length){
-      // Check if its an  FastAcknowledge package + FastAcknowledge package+ S7Data package
-      // Possibly because NodeS7 or Application is too slow at this moment!
-      // <Buffer 03 00 00 07 02 f0 00 03 00 00 1b 02 f0 80 32 03 00 00 00 00 00 08 00 00 00 00 f0 00 00 01 00 01 00 f0>  => data.length==7+7+20=34
-      ret=data.slice(7, data.length)//Cut off the first Fast Acknowledge Packet
-   }else{
-      ret='error';
-   }
-   return ret;
+	if (RFC_Version !== 0x03 && TPDU_Code !== 0xf0) {
+		//Check if its an RFC package and a Data package
+		return 'error';
+	} else if ((LastDataUnit >> 7) === 0 && TPKT_Length == data.length && data.length === 7) {
+		// Check if its a Fast Acknowledge package from older PLCs or  WinAC or data is too long ...
+		// For example: <Buffer 03 00 00 07 02 f0 00> => data.length==7
+		ret = 'fastACK';
+	} else if ((LastDataUnit >> 7) == 1 && TPKT_Length <= data.length) {
+		// Check if its an  FastAcknowledge package + S7Data package
+		// <Buffer 03 00 00 1b 02 f0 80 32 03 00 00 00 00 00 08 00 00 00 00 f0 00 00 01 00 01 00 f0> => data.length==7+20=27
+		ret = data;
+	} else if ((LastDataUnit >> 7) == 0 && TPKT_Length !== data.length) {
+		// Check if its an  FastAcknowledge package + FastAcknowledge package+ S7Data package
+		// Possibly because NodeS7 or Application is too slow at this moment!
+		// <Buffer 03 00 00 07 02 f0 00 03 00 00 1b 02 f0 80 32 03 00 00 00 00 00 08 00 00 00 00 f0 00 00 01 00 01 00 f0>  => data.length==7+7+20=34
+		ret = data.slice(7, data.length)//Cut off the first Fast Acknowledge Packet
+	} else {
+		ret = 'error';
+	}
+	return ret;
 }
 
 function S7AddrToBuffer(addrinfo, isWriting) {
@@ -1676,21 +1689,21 @@ function processS7Packet(theData, theItem, thePointer, theCID) {
 	if (remainingLength < reportedDataLength + 2) {
 		theItem.valid = false;
 		theItem.errCode = 'Malformed Packet - Item Data Length and Packet Length Disagree.  RDL+2 ' + (reportedDataLength + 2) + ' remainingLength ' + remainingLength;
-		outputLog(theItem.errCode, 0 , theCID);
+		outputLog(theItem.errCode, 0, theCID);
 		return 0;   			// Hard to increment the pointer so we call it a malformed packet and we're done.
 	}
 
 	if (responseCode !== 0xff) {
 		theItem.valid = false;
 		theItem.errCode = 'Invalid Response Code - ' + responseCode;
-		outputLog(theItem.errCode, 0 , theCID);
+		outputLog(theItem.errCode, 0, theCID);
 		return thePointer + reportedDataLength + 4;
 	}
 
 	if (transportCode !== theItem.readTransportCode) {
 		theItem.valid = false;
 		theItem.errCode = 'Invalid Transport Code - ' + transportCode;
-		outputLog(theItem.errCode, 0 , theCID);
+		outputLog(theItem.errCode, 0, theCID);
 		return thePointer + reportedDataLength + 4;
 	}
 
@@ -1699,7 +1712,7 @@ function processS7Packet(theData, theItem, thePointer, theCID) {
 	if (reportedDataLength !== expectedLength) {
 		theItem.valid = false;
 		theItem.errCode = 'Invalid Response Length - Expected ' + expectedLength + ' but got ' + reportedDataLength + ' bytes.';
-		outputLog(theItem.errCode, 0 , theCID);
+		outputLog(theItem.errCode, 0, theCID);
 		return reportedDataLength + 2;
 	}
 
@@ -1821,7 +1834,7 @@ function readDT(buffer, offset, isUTC) {
 	return date;
 }
 
-function writeDT(date, buffer, offset, isUTC){
+function writeDT(date, buffer, offset, isUTC) {
 	if (!(date instanceof Date)) {
 		if (date > 631152000000 && date < 3786911999999) {
 			// is between "1990-01-01T00:00:00.000Z" and "2089-12-31T23:59:59.999Z" in JS epoch
@@ -1962,7 +1975,7 @@ function processS7ReadItem(theItem) {
 						theItem.value.push(theItem.byteBuffer.readDoubleBE(thePointer));
 						break;
 					case "LINT":
-//						theItem.value.push(theItem.byteBuffer.readBigInt64BE(thePointer));
+						//						theItem.value.push(theItem.byteBuffer.readBigInt64BE(thePointer));
 						break;
 					case "DWORD":
 						theItem.value.push(theItem.byteBuffer.readUInt32BE(thePointer));
@@ -1985,12 +1998,12 @@ function processS7ReadItem(theItem) {
 						break;
 					case "S":
 					case "STRING":
-						strlen = theItem.byteBuffer.readUInt8(thePointer+1);
+						strlen = theItem.byteBuffer.readUInt8(thePointer + 1);
 						tempString = '';
 						for (var charOffset = 2; charOffset < theItem.dtypelen && (charOffset - 2) < strlen; charOffset++) {
 							// say strlen = 1 (one-char string) this char is at arrayIndex of 2.
 							// Convert to string.
-							tempString += String.fromCharCode(theItem.byteBuffer.readUInt8(thePointer+charOffset));
+							tempString += String.fromCharCode(theItem.byteBuffer.readUInt8(thePointer + charOffset));
 						}
 						theItem.value.push(tempString);
 						break;
@@ -2051,7 +2064,7 @@ function processS7ReadItem(theItem) {
 					theItem.value = theItem.byteBuffer.readDoubleBE(thePointer);
 					break;
 				case "LINT":
-//					theItem.value = theItem.byteBuffer.readBigInt64BE(thePointer);
+					//					theItem.value = theItem.byteBuffer.readBigInt64BE(thePointer);
 					break;
 				case "DWORD":
 					theItem.value = theItem.byteBuffer.readUInt32BE(thePointer);
@@ -2075,12 +2088,12 @@ function processS7ReadItem(theItem) {
 					break;
 				case "S":
 				case "STRING":
-					strlen = theItem.byteBuffer.readUInt8(thePointer+1);
+					strlen = theItem.byteBuffer.readUInt8(thePointer + 1);
 					theItem.value = '';
 					for (var charOffset = 2; charOffset < theItem.dtypelen && (charOffset - 2) < strlen; charOffset++) {
 						// say strlen = 1 (one-char string) this char is at arrayIndex of 2.
 						// Convert to string.
-						theItem.value += String.fromCharCode(theItem.byteBuffer.readUInt8(thePointer+charOffset));
+						theItem.value += String.fromCharCode(theItem.byteBuffer.readUInt8(thePointer + charOffset));
 					}
 					break;
 				case "C":
@@ -2166,7 +2179,7 @@ function bufferizeS7Item(theItem) {
 					theItem.writeBuffer.writeDoubleBE(theItem.writeValue[arrayIndex], thePointer);
 					break;
 				case "LINT":
-//					theItem.writeBuffer.writeBigInt64BE(theItem.writeValue[arrayIndex], thePointer);
+					//					theItem.writeBuffer.writeBigInt64BE(theItem.writeValue[arrayIndex], thePointer);
 					break;
 				case "DWORD":
 					theItem.writeBuffer.writeInt32BE(theItem.writeValue[arrayIndex], thePointer);
@@ -2200,12 +2213,12 @@ function bufferizeS7Item(theItem) {
 				case "STRING":
 					// Convert to bytes.
 					theItem.writeBuffer.writeUInt8(theItem.dtypelen - 2, thePointer); // Array length is requested val, -2 is string length
-					theItem.writeBuffer.writeUInt8(Math.min(theItem.dtypelen - 2, theItem.writeValue[arrayIndex].length), thePointer+1); // Array length is requested val, -2 is string length
+					theItem.writeBuffer.writeUInt8(Math.min(theItem.dtypelen - 2, theItem.writeValue[arrayIndex].length), thePointer + 1); // Array length is requested val, -2 is string length
 					for (var charOffset = 2; charOffset < theItem.dtypelen; charOffset++) {
 						if (charOffset < (theItem.writeValue[arrayIndex].length + 2)) {
-							theItem.writeBuffer.writeUInt8(theItem.writeValue[arrayIndex].charCodeAt(charOffset-2), thePointer+charOffset);
+							theItem.writeBuffer.writeUInt8(theItem.writeValue[arrayIndex].charCodeAt(charOffset - 2), thePointer + charOffset);
 						} else {
-							theItem.writeBuffer.writeUInt8(32, thePointer+charOffset); // write space
+							theItem.writeBuffer.writeUInt8(32, thePointer + charOffset); // write space
 						}
 					}
 					break;
@@ -2256,7 +2269,7 @@ function bufferizeS7Item(theItem) {
 				theItem.writeBuffer.writeDoubleBE(theItem.writeValue, thePointer);
 				break;
 			case "LINT":
-//				theItem.writeBuffer.writeBigInt64BE(theItem.writeValue, thePointer);
+				//				theItem.writeBuffer.writeBigInt64BE(theItem.writeValue, thePointer);
 				break;
 			case "DWORD":
 				theItem.writeBuffer.writeUInt32BE(theItem.writeValue, thePointer);
@@ -2289,13 +2302,13 @@ function bufferizeS7Item(theItem) {
 			case "STRING":
 				// Convert to bytes.
 				theItem.writeBuffer.writeUInt8(theItem.dtypelen - 2, thePointer); // Array length is requested val, -2 is string length
-				theItem.writeBuffer.writeUInt8(Math.min(theItem.dtypelen - 2, theItem.writeValue.length), thePointer+1); // Array length is requested val, -2 is string length
+				theItem.writeBuffer.writeUInt8(Math.min(theItem.dtypelen - 2, theItem.writeValue.length), thePointer + 1); // Array length is requested val, -2 is string length
 
 				for (var charOffset = 2; charOffset < theItem.dtypelen; charOffset++) {
 					if (charOffset < (theItem.writeValue.length + 2)) {
-						theItem.writeBuffer.writeUInt8(theItem.writeValue.charCodeAt(charOffset-2), thePointer+charOffset);
+						theItem.writeBuffer.writeUInt8(theItem.writeValue.charCodeAt(charOffset - 2), thePointer + charOffset);
 					} else {
-						theItem.writeBuffer.writeUInt8(32, thePointer+charOffset); // write space
+						theItem.writeBuffer.writeUInt8(32, thePointer + charOffset); // write space
 					}
 				}
 				break;
@@ -2375,7 +2388,7 @@ function stringToS7Addr(addr, useraddr, cParam) {
 			   What about "uint16", "uint32"
 			*/
 
-/* All styles of peripheral IOs (no bit access allowed) */
+			/* All styles of peripheral IOs (no bit access allowed) */
 			case "PIB":
 			case "PEB":
 			case "PQB":
@@ -2426,7 +2439,7 @@ function stringToS7Addr(addr, useraddr, cParam) {
 				theItem.datatype = "REAL";
 				break;
 
-/* All styles of standard inputs (in oposit to peripheral inputs) */
+			/* All styles of standard inputs (in oposit to peripheral inputs) */
 			case "I":
 			case "E":
 				theItem.addrtype = "I";
@@ -2477,7 +2490,7 @@ function stringToS7Addr(addr, useraddr, cParam) {
 				theItem.addrtype = "I";
 				theItem.datatype = "LINT";
 				break;
-/* All styles of standard outputs (in oposit to peripheral outputs) */
+			/* All styles of standard outputs (in oposit to peripheral outputs) */
 			case "Q":
 			case "A":
 				theItem.addrtype = "Q";
@@ -2528,7 +2541,7 @@ function stringToS7Addr(addr, useraddr, cParam) {
 				theItem.addrtype = "Q";
 				theItem.datatype = "LINT";
 				break;
-/* All styles of marker */
+			/* All styles of marker */
 			case "M":
 				theItem.addrtype = "M";
 				theItem.datatype = "X";
@@ -2569,13 +2582,13 @@ function stringToS7Addr(addr, useraddr, cParam) {
 				theItem.addrtype = "M";
 				theItem.datatype = "LINT";
 				break;
-/* Timer */
+			/* Timer */
 			case "T":
 				theItem.addrtype = "T";
 				theItem.datatype = "TIMER";
 				break;
 
-/* Counter */
+			/* Counter */
 			case "C":
 				theItem.addrtype = "C";
 				theItem.datatype = "COUNTER";
@@ -2790,7 +2803,7 @@ function S7Item() { // Object
 	this.itemReference = undefined;
 
 	// And functions...
-	this.clone = function() {
+	this.clone = function () {
 		var newObj = new S7Item();
 		for (var i in this) {
 			if (i == 'clone') continue;
@@ -2798,7 +2811,7 @@ function S7Item() { // Object
 		} return newObj;
 	};
 
-	this.badValue = function() {
+	this.badValue = function () {
 		switch (this.datatype) {
 			case "DT":
 			case "DTZ":
