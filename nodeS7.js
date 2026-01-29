@@ -461,12 +461,20 @@ NodeS7.prototype.onPDUReply = function (theData) {
 
 
 NodeS7.prototype.writeItems = function (arg, value, cb) {
-	var self = this, i;
-	outputLog("Preparing to WRITE " + arg + " to value " + value, 0, self.connectionID);
+	var self = this;
+	var i;
 	if (self.isWriting() || self.writeInQueue) {
 		outputLog("You must wait until all previous writes have finished before scheduling another. ", 0, self.connectionID);
+
+		// [FIX] Issue #130: Ensure callback is executed with an error if the write operation is blocked.
+		// This prevents wrapper libraries (like Node-RED) from hanging indefinitely awaiting a callback.
+		if (typeof cb === "function") {
+			cb(new Error("WRITE_IN_PROGRESS: Operation rejected because a write request is already active."));
+		}
+
 		return 1;  // Watch for this in your code - 1 means it hasn't actually entered into the queue.
 	}
+
 
 	if (typeof cb === "function") {
 		self.writeDoneCallback = cb;
